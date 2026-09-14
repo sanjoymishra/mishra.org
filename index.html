@@ -9,33 +9,53 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  body { margin: 0; background: #0D0D0D; }
-  a { color: #E85D26; text-decoration: none; }
-  a:hover { color: #F0ECE6; }
+  body { margin: 0; background: #F5F1EB; }
+  a { color: #B8431A; text-decoration: none; }
+  a:hover { color: #1A1611; }
   .noise { position: fixed; inset: 0; z-index: 9999; pointer-events: none; opacity: 0.03;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
   .btn-primary { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 17px; letter-spacing: 0.04em; text-transform: uppercase; color: #FFFFFF; background: linear-gradient(135deg, #E85D26, #B8431A); padding: 12px 24px; border-radius: 100px; box-shadow: 0 4px 18px rgba(232, 93, 38, 0.35); transition: filter 0.2s; }
   .btn-primary:hover { filter: brightness(1.1); color: #FFFFFF; }
-  .btn-ghost { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 17px; letter-spacing: 0.04em; text-transform: uppercase; color: #F0ECE6; border: 1px solid #3A3A3A; padding: 11px 24px; border-radius: 100px; transition: background 0.2s; }
-  .btn-ghost:hover { background: #1A1A1A; color: #F0ECE6; }
+  .btn-ghost { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 17px; letter-spacing: 0.04em; text-transform: uppercase; color: #1A1611; border: 1px solid #B8AC9C; padding: 11px 24px; border-radius: 100px; transition: background 0.2s; }
+  .btn-ghost:hover { background: #EAE3D8; color: #1A1611; }
 </style>
 </head>
 <body>
 <div class="noise"></div>
+<div style="position: fixed; inset: 0; pointer-events: none; overflow: hidden; background-image: linear-gradient(rgba(184, 67, 26, 0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(184, 67, 26, 0.12) 1px, transparent 1px); background-size: 48px 48px;">
+  <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" style="position: absolute; inset: 0; width: 100%; height: 100%;">
+    <path d="M-40 780 C 240 780, 320 180, 620 180 S 1040 700, 1480 240" fill="none" stroke="#B8431A" stroke-width="2" opacity="0.45"></path>
+    <path d="M-40 520 Q 360 900, 760 460 T 1480 560" fill="none" stroke="#A8842A" stroke-width="2" opacity="0.4"></path>
+    <path d="M-40 300 C 300 520, 700 60, 1480 420" fill="none" stroke="#3A322A" stroke-width="1.5" stroke-dasharray="6 8" opacity="0.2"></path>
+    <g fill="#6A5F52" font-family="'JetBrains Mono', monospace">
+      <text x="120" y="150" font-size="64" opacity="0.28">&#8747;</text>
+      <text x="1180" y="220" font-size="30" opacity="0.28">dy/dx</text>
+      <text x="220" y="740" font-size="26" opacity="0.25">lim x&#8594;&#8734;</text>
+      <text x="1080" y="760" font-size="72" opacity="0.25">&#8721;</text>
+      <text x="80" y="460" font-size="24" opacity="0.22">f&#8242;(x)</text>
+      <text x="1280" y="500" font-size="24" opacity="0.22">e&#739;</text>
+      <text x="640" y="90" font-size="26" opacity="0.25">&#960;</text>
+      <text x="480" y="840" font-size="28" opacity="0.25">&#8747;&#8320;&#185; x&#178; dx</text>
+      <text x="900" y="120" font-size="24" opacity="0.22">&#916;x&#8594;0</text>
+    </g>
+    <circle cx="620" cy="180" r="4" fill="#B8431A" opacity="0.6"></circle>
+    <circle cx="760" cy="460" r="3" fill="#A8842A" opacity="0.55"></circle>
+  </svg>
+</div>
 <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 18px 64px; box-sizing: border-box;">
   <main style="max-width: 560px; width: 100%; display: flex; flex-direction: column; gap: 28px;">
     <div style="display: flex; flex-direction: column; gap: 10px;">
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: #E85D26;">mishra.org</div>
-      <h1 style="font-family: 'Bebas Neue', sans-serif; font-size: 64px; line-height: 0.95; margin: 0; color: #F0ECE6; text-transform: uppercase; font-weight: 400;">Maitri Mishra</h1>
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: #A89F93;">Certified AP Mathematics Teacher · Open to Tutoring</div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: #B8431A;">mishra.org</div>
+      <h1 style="font-family: 'Bebas Neue', sans-serif; font-size: 64px; line-height: 0.95; margin: 0; color: #1A1611; text-transform: uppercase; font-weight: 400;">Maitri Mishra</h1>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: #6A5F52;">Certified AP Mathematics Teacher · Open to Tutoring</div>
     </div>
-    <div style="height: 2px; width: 100%; background: linear-gradient(90deg, #E85D26, transparent);"></div>
-    <p style="font-family: 'Barlow Condensed', sans-serif; font-weight: 400; font-size: 20px; line-height: 1.45; margin: 0; color: #C9C2B8;">Certified high school mathematics teacher with advanced degrees in Physics and Computer Science and over 15 years of teaching experience in highly ranked public and independent schools. AP Reader for the College Board — she scores the national AP Calculus exam. Tutoring online and in person.</p>
-    <div style="border-left: 3px solid #E8C45A; background: rgba(232, 196, 90, 0.06); padding: 14px 18px; display: flex; flex-direction: column; gap: 6px;">
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #E8C45A;">Creator of Kinora</div>
-      <div style="font-family: 'Barlow Condensed', sans-serif; font-weight: 400; font-size: 18px; line-height: 1.4; color: #C9C2B8;">Maitri built <a href="https://kinora.study" target="_blank" rel="noopener">Kinora</a> — a math fluency platform covering Algebra I through AP Calculus. She designed the curriculum and wrote the problem bank.</div>
+    <div style="height: 2px; width: 100%; background: linear-gradient(90deg, #B8431A, transparent);"></div>
+    <p style="font-family: 'Barlow Condensed', sans-serif; font-weight: 400; font-size: 20px; line-height: 1.45; margin: 0; color: #3A322A;">Certified high school mathematics teacher with advanced degrees in Physics, Mathematics and Computer Science and over 15 years of teaching experience in highly ranked public and independent schools. AP Reader for the College Board — she scores the national AP Calculus exam. Tutoring online and in person.</p>
+    <div style="border-left: 3px solid #A8842A; background: rgba(168, 132, 42, 0.08); padding: 14px 18px; display: flex; flex-direction: column; gap: 6px;">
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #7A5F1A;">Creator of Kinora</div>
+      <div style="font-family: 'Barlow Condensed', sans-serif; font-weight: 400; font-size: 18px; line-height: 1.4; color: #3A322A;">Maitri built <a href="https://kinora.study" target="_blank" rel="noopener">Kinora</a> — a math fluency platform covering Algebra I through AP Calculus. She designed the curriculum and wrote the problem bank.</div>
     </div>
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #A89F93; line-height: 1.8;">AP Calculus AB · AP Calculus BC · Precalculus · Algebra · Geometry · SAT/ACT Math</div>
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #6A5F52; line-height: 1.8;">AP Calculus AB · AP Calculus BC · Precalculus · Algebra · Geometry</div>
     <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
       <a class="btn-primary" href="https://www.wyzant.com/match/tutor/78847410/" target="_blank" rel="noopener">Tutor on Wyzant</a>
       <a class="btn-ghost" href="https://www.linkedin.com/in/maitriyee/" target="_blank" rel="noopener">LinkedIn</a>
