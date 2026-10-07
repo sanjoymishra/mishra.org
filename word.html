@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Word Solver</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<style>
+  html, body { margin: 0; background: #f6f4ef; }
+  button:disabled { cursor: default !important; }
+  *:focus-visible { outline: 2px solid #e0a24a; outline-offset: 1px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useMemo, useCallback } = React;
+
+// ─────────────────────────────────────────────────────────────
+// Board geometry
+// ─────────────────────────────────────────────────────────────
+const N = 15;
+const COLS = "ABCDEFGHIJKLMNO";
+const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const DICT_URLS = [
+  "https://cdn.jsdelivr.net/gh/dwyl/english-words@master/words_alpha.txt",
+  "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt",
+];
+
+function mirror(spec) {
+  const g = Array.from({ length: N }, () => Array(N).fill(""));
+  for (let r = 0; r < 8; r++) {
+    const s = spec[r] || {};
+    for (const [type, cols] of Object.entries(s))
+      for (const c of cols) {
+        g[r][c] = type;
+        g[N - 1 - r][c] = type;
+      }
+  }
+  return g;
+}
+
+const LAYOUTS = {
+  wwf: {
+    name: "Words With Friends",
+    bingo: 35,
+    grid: mirror({
+      0: { TL: [0, 14], TW: [3, 11], DL: [7] },
+      1: { DW: [1, 13], TL: [6, 8] },
+      2: { DL: [4, 10] },
+      3: { TW: [0, 14], DL: [3, 11], DW: [7] },
+      4: { DL: [2, 12], TL: [5, 9] },
+      5: { TL: [4, 10], DL: [7] },
+      6: { TL: [1, 13] },
+      7: { DL: [0, 14], DW: [3, 11], DL: [5, 9] },
+    }),
+  },
+  scrabble: {
+    name: "Scrabble",
+    bingo: 50,
+    grid: mirror({
+      0: { TW: [0, 7, 14], DL: [3, 11] },
+      1: { DW: [1, 13], TL: [5, 9] },
+      2: { DW: [2, 12], DL: [6, 8] },
+      3: { DL: [0, 14], DW: [3, 11], DL: [7] },
+      4: { DW: [4, 10] },
+      5: { TL: [1, 5, 9, 13] },
+      6: { DL: [2, 6, 8, 12] },
+      7: { TW: [0, 14], DL: [3, 11], DW: [7] },
+    }),
+  },
+};
+
+const V = (s) =>
+  Object.fromEntries(ALPHA.split("").map((L, i) => [L, s[i]]));
+const VALUE_PRESETS = {
+  screenshot: {
+    name: "Your game (M3 · P3 · V6 · W5)",
+    v: V([1,4,4,2,1,4,3,3,1,10,5,2,3,2,1,3,10,1,1,1,2,6,5,8,3,10]),
+  },
+  wwf: {
+    name: "Words With Friends",
+    v: V([1,4,4,2,1,4,3,3,1,10,5,2,4,2,1,4,10,1,1,1,2,5,4,8,3,10]),
+  },
+  scrabble: {
+    name: "Scrabble",
+    v: V([1,3,3,2,1,4,2,4,1,8,5,1,3,1,1,3,10,1,1,1,1,4,4,8,4,10]),
+  },
+};
+
+// Leave values — rough equity of keeping each tile on your rack.
+const LEAVE = {
+  A: 1, B: -3.5, C: -0.5, D: 0, E: 2, F: -2, G: -3, H: 0.5, I: -1,
+  J: -3, K: -1, L: 0, M: 0, N: 0.5, O: -1.5, P: -1, Q: -7, R: 1,
+  S: 8, T: 0, U: -3, V: -5.5, W: -4, X: 3, Y: -1, Z: 2, "?": 25,
+};
+function leaveValue(leave) {
+  let v = 0;
+  const seen = {};
+  let vow = 0, con = 0;
+  for (const ch of leave) {
+    v += LEAVE[ch] ?? 0;
+    seen[ch] = (seen[ch] || 0) + 1;
+    if (seen[ch] > 1 && ch !== "?") v -= 3;
+    if ("AEIOU".includes(ch)) vow++;
+    else if (ch !== "?") con++;
+  }
+  if (leave.length >= 3) {
+    if (vow === 0 || con === 0) v -= 4;
+    else if (Math.abs(vow - con) >= 3) v -= 2;
+  }
+  return v;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Dictionary (trie)
+// ─────────────────────────────────────────────────────────────
+function buildTrie(words) {
+  const root = { c: {}, t: false };
+  let count = 0;
+  for (const w of words) {
+    if (w.length < 2 || w.length > 15 || !/^[A-Z]+$/.test(w)) continue;
+    let n = root;
+    for (const ch of w) n = n.c[ch] || (n.c[ch] = { c: {}, t: false });
+    if (!n.t) count++;
+    n.t = true;
+  }
+  return { root, count };
+}
+function walk(root, s) {
+  let n = root;
+  for (const ch of s) {
+    n = n.c[ch];
+    if (!n) return null;
+  }
+  return n;
+}
+const isWord = (root, s) => !!walk(root, s)?.t;
+
+// ─────────────────────────────────────────────────────────────
+// Move generation (Appel–Jacobson style: cross-checks + anchors)
+// ─────────────────────────────────────────────────────────────
+const transpose = (g) => g[0].map((_, c) => g.map((row) => row[c]));
+const tv = (cell, values) => (cell.b ? 0 : values[cell.l]);
+
+function generateMoves(grid, bonus, root, rackStr, values, bingo) {
+  const rack = {};
+  for (const ch of rackStr) rack[ch] = (rack[ch] || 0) + 1;
+  const anyTiles = grid.some((r) => r.some(Boolean));
+  const out = [];
+  genDir(grid, bonus, root, rack, values, bingo, anyTiles, false, out);
+  genDir(transpose(grid), transpose(bonus), root, rack, values, bingo, anyTiles, true, out);
+  // dedupe (one-tile plays appear in both orientations)
+  const seen = new Set();
+  const moves = [];
+  for (const m of out) {
+    const key = m.tiles.map((t) => `${t.r},${t.c},${t.l},${t.b ? 1 : 0}`).sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    moves.push(m);
+  }
+  return moves;
+}
+
+function genDir(grid, bonus, root, rack, values, bingo, anyTiles, transposed, out) {
+  for (let r = 0; r < N; r++) {
+    if (!anyTiles && r !== 7) continue;
+    const row = grid[r];
+    // cross-checks for empty cells
+    const cross = Array(N).fill(null); // Set of allowed letters, or null = any
+    const crossHas = Array(N).fill(false);
+    const crossScore = Array(N).fill(0);
+    const anchor = Array(N).fill(false);
+    for (let c = 0; c < N; c++) {
+      if (row[c]) continue;
+      let up = "", down = "", sc = 0;
+      for (let k = r - 1; k >= 0 && grid[k][c]; k--) { up = grid[k][c].l + up; sc += tv(grid[k][c], values); }
+      for (let k = r + 1; k < N && grid[k][c]; k++) { down += grid[k][c].l; sc += tv(grid[k][c], values); }
+      const adjRow = (c > 0 && row[c - 1]) || (c < N - 1 && row[c + 1]);
+      if (up || down) {
+        crossHas[c] = true;
+        crossScore[c] = sc;
+        const set = new Set();
+        for (const L of ALPHA) if (isWord(root, up + L + down)) set.add(L);
+        cross[c] = set;
+        anchor[c] = true;
+      } else if (adjRow) anchor[c] = true;
+    }
+    if (!anyTiles) anchor[7] = true;
+
+    const placed = [];
+    const record = (start, end) => {
+      let word = "", sum = 0, wm = 1, crossTotal = 0;
+      for (let c = start; c <= end; c++) {
+        const p = placed.find((t) => t.c === c);
+        if (p) {
+          word += p.l;
+          let lv = p.b ? 0 : values[p.l];
+          let lm = 1, cm = 1;
+          const bt = bonus[r][c];
+          if (bt === "DL") lm = 2; else if (bt === "TL") lm = 3;
+          else if (bt === "DW") cm = 2; else if (bt === "TW") cm = 3;
+          wm *= cm;
+          sum += lv * lm;
+          if (crossHas[c]) crossTotal += (crossScore[c] + lv * lm) * cm;
+        } else {
+          word += row[c].l;
+          sum += tv(row[c], values);
+        }
+      }
+      const score = sum * wm + crossTotal + (placed.length === 7 ? bingo : 0);
+      const tiles = placed.map((t) => (transposed ? { r: t.c, c: r, l: t.l, b: t.b } : { r, c: t.c, l: t.l, b: t.b }));
+      const leaveArr = [];
+      for (const [k, n] of Object.entries(rack)) for (let i = 0; i < n; i++) leaveArr.push(k);
+      const leave = leaveArr.sort().join("");
+      out.push({
+        word, score, tiles, leave,
+        dir: transposed ? "down" : "across",
+        row: transposed ? start : r,
+        col: transposed ? r : start,
+        lv: leaveValue(leave),
+      });
+    };
+
+    const extendRight = (node, col, start, anc) => {
+      const cell = col < N ? row[col] : null;
+      if (col >= N || !cell) {
+        if (node.t && placed.length > 0 && col > anc) record(start, col - 1);
+        if (col >= N) return;
+        for (const L in node.c) {
+          if (cross[col] && !cross[col].has(L)) continue;
+          if (rack[L] > 0) {
+            rack[L]--; placed.push({ c: col, l: L, b: false });
+            extendRight(node.c[L], col + 1, start, anc);
+            placed.pop(); rack[L]++;
+          }
+          if (rack["?"] > 0) {
+            rack["?"]--; placed.push({ c: col, l: L, b: true });
+            extendRight(node.c[L], col + 1, start, anc);
+            placed.pop(); rack["?"]++;
+          }
+        }
+      } else {
+        const nx = node.c[cell.l];
+        if (nx) extendRight(nx, col + 1, start, anc);
+      }
+    };
+
+    const leftPart = (node, anc, limit) => {
+      extendRight(node, anc, anc - placed.length, anc);
+      if (limit <= 0) return;
+      for (const L in node.c) {
+        const col = anc - placed.length - 1;
+        if (rack[L] > 0) {
+          rack[L]--; placed.unshift({ c: col, l: L, b: false });
+          leftPart(node.c[L], anc, limit - 1);
+          placed.shift(); rack[L]++;
+        }
+        if (rack["?"] > 0) {
+          rack["?"]--; placed.unshift({ c: col, l: L, b: true });
+          leftPart(node.c[L], anc, limit - 1);
+          placed.shift(); rack["?"]++;
+        }
+      }
+    };
+
+    for (let a = 0; a < N; a++) {
+      if (!anchor[a]) continue;
+      if (a > 0 && row[a - 1]) {
+        let s = a - 1;
+        while (s > 0 && row[s - 1]) s--;
+        let prefix = "";
+        for (let c = s; c < a; c++) prefix += row[c].l;
+        const node = walk(root, prefix);
+        if (node) extendRight(node, a, s, a);
+      } else {
+        let limit = 0;
+        for (let c = a - 1; c >= 0 && !row[c] && !anchor[c]; c--) limit++;
+        leftPart(root, a, limit);
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Starting position (the screenshot)
+// ─────────────────────────────────────────────────────────────
+function emptyGrid() {
+  return Array.from({ length: N }, () => Array(N).fill(null));
+}
+function sampleGrid() {
+  const g = emptyGrid();
+  const put = (r, c, s, down) =>
+    [...s].forEach((l, i) => (g[r + (down ? i : 0)][c + (down ? 0 : i)] = { l, b: false }));
+  put(5, 7, "VOW", true);
+  put(7, 7, "WIZARDS", false);
+  put(3, 13, "PROBS", true);
+  put(0, 14, "MAXI", true);
+  return g;
+}
+
+const BONUS_STYLE = {
+  TW: { bg: "#e3c1d6", fg: "#7a2d63" },
+  DW: { bg: "#c9d6e6", fg: "#2f4c72" },
+  TL: { bg: "#c8dcc4", fg: "#365a35" },
+  DL: { bg: "#ecdfb8", fg: "#6e5a1e" },
+  "": { bg: "#ebe8e2", fg: "#ebe8e2" },
+};
+
+// ─────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────
+function WordSolver() {
+  const [layoutKey, setLayoutKey] = useState("wwf");
+  const [valueKey, setValueKey] = useState("screenshot");
+  const [values, setValues] = useState(VALUE_PRESETS.screenshot.v);
+  const [grid, setGrid] = useState(sampleGrid);
+  const [rack, setRack] = useState("ABALSAR");
+  const [sel, setSel] = useState({ r: 7, c: 7 });
+  const [typeDown, setTypeDown] = useState(false);
+  const [dict, setDict] = useState({ status: "loading", count: 0, name: "" });
+  const [moves, setMoves] = useState(null);
+  const [sortBy, setSortBy] = useState("equity");
+  const [preview, setPreview] = useState(null);
+  const [ai, setAi] = useState({ status: "idle", text: "" });
+  const [showValues, setShowValues] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [wordInput, setWordInput] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const trieRef = useRef(null);
+  const boardRef = useRef(null);
+
+  const layout = LAYOUTS[layoutKey];
+
+  // Load default dictionary
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      for (const url of DICT_URLS) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const text = await res.text();
+          if (text.length < 100000) continue;
+          const { root, count } = buildTrie(text.toUpperCase().split(/\r?\n/));
+          if (!alive) return;
+          trieRef.current = root;
+          setDict({ status: "ready", count, name: "dwyl english-words (permissive)" });
+          return;
+        } catch {
+          /* try next mirror */
+        }
+      }
+      if (alive) setDict({ status: "error", count: 0, name: "" });
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const loadText = (text, name) => {
+    const { root, count } = buildTrie(String(text).toUpperCase().split(/[\s,;]+/));
+    if (!count) return;
+    trieRef.current = root;
+    setDict({ status: "ready", count, name });
+    setMoves(null);
+    setShowPaste(false);
+  };
+  const loadFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => loadText(reader.result, file.name);
+    reader.readAsText(file);
+  };
+
+  // Place a typed word on the board from the selected square
+  const placeWord = () => {
+    const w = wordInput.trim();
+    if (!w) return;
+    const g = grid.map((row) => row.slice());
+    let { r, c } = sel;
+    for (const ch of w) {
+      if (r >= N || c >= N) break;
+      if (/[a-zA-Z]/.test(ch)) g[r][c] = { l: ch.toUpperCase(), b: ch === ch.toLowerCase() };
+      if (typeDown) r++; else c++;
+    }
+    setGrid(g);
+    setWordInput("");
+    setMoves(null);
+    setPreview(null);
+  };
+
+  const solve = () => {
+    if (!trieRef.current) return;
+    const r = rack.toUpperCase().replace(/[^A-Z?]/g, "");
+    const found = generateMoves(grid, layout.grid, trieRef.current, r, values, layout.bingo);
+    setMoves(found);
+    setPreview(null);
+    setAi({ status: "idle", text: "" });
+  };
+
+  const sorted = useMemo(() => {
+    if (!moves) return null;
+    const arr = [...moves];
+    arr.sort((a, b) =>
+      sortBy === "score" ? b.score - a.score || b.lv - a.lv : b.score + b.lv - (a.score + a.lv)
+    );
+    return arr.slice(0, 25);
+  }, [moves, sortBy]);
+
+  const playMove = (m) => {
+    const g = grid.map((row) => row.slice());
+    for (const t of m.tiles) g[t.r][t.c] = { l: t.l, b: t.b };
+    setGrid(g);
+    setRack(m.leave);
+    setMoves(null);
+    setPreview(null);
+  };
+
+  const onKey = (e) => {
+    const { r, c } = sel;
+    const k = e.key;
+    const move = (dr, dc) => setSel({ r: Math.max(0, Math.min(N - 1, r + dr)), c: Math.max(0, Math.min(N - 1, c + dc)) });
+    if (k === "ArrowUp") { move(-1, 0); e.preventDefault(); }
+    else if (k === "ArrowDown") { move(1, 0); e.preventDefault(); }
+    else if (k === "ArrowLeft") { move(0, -1); e.preventDefault(); }
+    else if (k === "ArrowRight") { move(0, 1); e.preventDefault(); }
+    else if (k === "Enter") { setTypeDown((d) => !d); e.preventDefault(); }
+    else if (k === "Backspace" || k === "Delete") {
+      const g = grid.map((row) => row.slice());
+      g[r][c] = null;
+      setGrid(g); setMoves(null);
+      if (k === "Backspace") move(typeDown ? -1 : 0, typeDown ? 0 : -1);
+      e.preventDefault();
+    } else if (/^[a-zA-Z]$/.test(k)) {
+      const g = grid.map((row) => row.slice());
+      g[r][c] = { l: k.toUpperCase(), b: e.shiftKey };
+      setGrid(g); setMoves(null);
+      move(typeDown ? 1 : 0, typeDown ? 0 : 1);
+      e.preventDefault();
+    }
+  };
+
+  const notation = (m) =>
+    m.dir === "across" ? `${m.row + 1}${COLS[m.col]}` : `${COLS[m.col]}${m.row + 1}`;
+
+  const askAI = async () => {
+    if (!sorted) return;
+    setAi({ status: "loading", text: "" });
+    const boardText = grid
+      .map((row, r) => `${String(r + 1).padStart(2)} ` + row.map((x) => (x ? (x.b ? x.l.toLowerCase() : x.l) : ".")).join(" "))
+      .join("\n");
+    const list = sorted.slice(0, 10)
+      .map((m, i) => `${i + 1}. ${m.word} at ${notation(m)} ${m.dir} — ${m.score} pts, leave ${m.leave || "(none)"}, equity ${(m.score + m.lv).toFixed(1)}`)
+      .join("\n");
+    const prompt = `You are an expert ${layout.name} player. Board (rows 1-15, columns A-O left to right, lowercase = blank tile):\n   ${COLS.split("").join(" ")}\n${boardText}\n\nRack: ${rack}\n\nCandidate plays from a move generator (score + leave equity):\n${list}\n\nIn under 160 words: which play you would make and why, considering score, rack leave, what it opens for the opponent (triple-word lanes, hooks), and any candidate words you suspect are not valid in the official ${layout.name} dictionary. Plain prose, no headers.`;
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
+      });
+      const data = await res.json();
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      setAi({ status: "done", text: text || "No response." });
+    } catch (err) {
+      setAi({ status: "error", text: "Could not reach the model. Try again." });
+    }
+  };
+
+  const previewMap = useMemo(() => {
+    const m = new Map();
+    if (preview) for (const t of preview.tiles) m.set(`${t.r},${t.c}`, t);
+    return m;
+  }, [preview]);
+
+  const font = "'Avenir Next', 'Segoe UI', 'Helvetica Neue', system-ui, sans-serif";
+
+  return (
+    <div style={{ fontFamily: font, color: "#1d2433", background: "#f6f4ef", minHeight: "100vh", padding: "18px 14px 40px" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", flexWrap: "wrap", gap: 24 }}>
+
+        {/* ── Board column ─────────────────────────────── */}
+        <div style={{ flex: "1 1 420px", minWidth: 300 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+            <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0, letterSpacing: -0.5 }}>Best play</h1>
+            <div style={{ fontSize: 13, color: "#5c6470" }}>
+              {dict.status === "loading" && "Loading dictionary…"}
+              {dict.status === "ready" && `${dict.count.toLocaleString()} words · ${dict.name}`}
+              {dict.status === "error" && "Dictionary didn't load — upload one below."}
+            </div>
+          </div>
+
+          <div
+            ref={boardRef}
+            tabIndex={0}
+            onKeyDown={onKey}
+            style={{ outline: "none", borderRadius: 8, background: "#dcd8cf", padding: 6 }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: `24px repeat(${N}, 1fr)`, gap: 2 }}>
+              <div />
+              {COLS.split("").map((L) => (
+                <div key={L} style={{ textAlign: "center", fontSize: 10, color: "#6b7280", lineHeight: "14px" }}>{L}</div>
+              ))}
+              {grid.map((row, r) => (
+                <>
+                  <div key={`rl${r}`} style={{ fontSize: 10, color: "#6b7280", display: "flex", alignItems: "center", justifyContent: "center" }}>{r + 1}</div>
+                  {row.map((cell, c) => {
+                    const pv = previewMap.get(`${r},${c}`);
+                    const tile = pv || cell;
+                    const bt = layout.grid[r][c];
+                    const isSel = sel.r === r && sel.c === c;
+                    const bs = BONUS_STYLE[bt];
+                    return (
+                      <div
+                        key={`${r}-${c}`}
+                        onClick={() => { setSel({ r, c }); boardRef.current?.focus(); }}
+                        style={{
+                          aspectRatio: "1 / 1",
+                          borderRadius: 4,
+                          background: tile ? (pv ? "#c9772f" : "#2c4c86") : bs.bg,
+                          color: tile ? "#fff" : bs.fg,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          position: "relative",
+                          fontWeight: 700,
+                          fontSize: tile ? "clamp(11px, 2.4vw, 18px)" : "clamp(7px, 1.4vw, 10px)",
+                          boxShadow: isSel ? "0 0 0 2px #e0a24a inset" : tile ? "0 1px 0 rgba(0,0,0,.25)" : "none",
+                          cursor: "pointer",
+                          userSelect: "none",
+                        }}
+                      >
+                        {tile ? (tile.b ? tile.l.toLowerCase() : tile.l) : r === 7 && c === 7 ? "★" : bt ? bt.replace("T", "3").replace("D", "2") : ""}
+                        {tile && !tile.b && (
+                          <span style={{ position: "absolute", top: 1, right: 2, fontSize: "clamp(6px, 1.2vw, 9px)", fontWeight: 600, opacity: 0.85 }}>
+                            {values[tile.l]}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              ))}
+            </div>
+          </div>
+          {/* Place a word */}
+          <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+            <span style={{ color: "#5c6470" }}>Place at <b>{COLS[sel.c]}{sel.r + 1}</b></span>
+            <select value={typeDown ? "down" : "across"} onChange={(e) => setTypeDown(e.target.value === "down")} style={{ fontFamily: font, padding: "5px 6px", borderRadius: 6 }}>
+              <option value="across">across</option>
+              <option value="down">down</option>
+            </select>
+            <input
+              value={wordInput}
+              onChange={(e) => setWordInput(e.target.value.replace(/[^a-zA-Z]/g, ""))}
+              onKeyDown={(e) => e.key === "Enter" && placeWord()}
+              placeholder="word (lowercase = blank)"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              style={{ flex: "1 1 140px", fontFamily: font, fontSize: 15, fontWeight: 600, letterSpacing: 2, padding: "6px 10px", border: "1px solid #c9c4b8", borderRadius: 6, background: "#fff" }}
+            />
+            <button onClick={placeWord} disabled={!wordInput} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "7px 14px", borderRadius: 6, border: "none", background: wordInput ? "#2c4c86" : "#b9bec8", color: "#fff", cursor: "pointer" }}>
+              Place
+            </button>
+            <button onClick={() => { const g = grid.map((row) => row.slice()); g[sel.r][sel.c] = null; setGrid(g); setMoves(null); }} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>
+              Clear square
+            </button>
+          </div>
+          <p style={{ fontSize: 12, color: "#5c6470", margin: "6px 2px 0", lineHeight: 1.5 }}>
+            Tap a square to choose where the word starts. On a keyboard you can also type straight onto the board
+            (Shift+letter for a blank, Enter to switch direction).
+          </p>
+
+          {/* Rack + solve */}
+          <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "stretch", flexWrap: "wrap" }}>
+            <input
+              value={rack}
+              onChange={(e) => { setRack(e.target.value.toUpperCase().replace(/[^A-Z?]/g, "").slice(0, 7)); setMoves(null); }}
+              placeholder="Your tiles (? = blank)"
+              spellCheck={false}
+              style={{
+                flex: "1 1 180px", fontFamily: font, fontSize: 22, fontWeight: 700, letterSpacing: 6,
+                padding: "8px 14px", border: "1px solid #c9c4b8", borderRadius: 8, background: "#fff", textTransform: "uppercase",
+              }}
+            />
+            <button
+              onClick={solve}
+              disabled={dict.status !== "ready" || !rack}
+              style={{
+                fontFamily: font, fontSize: 16, fontWeight: 600, padding: "10px 22px", borderRadius: 8, border: "none",
+                background: dict.status === "ready" && rack ? "#2c4c86" : "#b9bec8", color: "#fff", cursor: "pointer",
+              }}
+            >
+              Find plays
+            </button>
+          </div>
+
+          {/* Settings */}
+          <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap", fontSize: 13 }}>
+            <label>Board&nbsp;
+              <select value={layoutKey} onChange={(e) => { setLayoutKey(e.target.value); setMoves(null); }} style={{ fontFamily: font, padding: "4px 6px", borderRadius: 6 }}>
+                {Object.entries(LAYOUTS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
+              </select>
+            </label>
+            <label>Tile values&nbsp;
+              <select value={valueKey} onChange={(e) => { setValueKey(e.target.value); setValues(VALUE_PRESETS[e.target.value].v); setMoves(null); }} style={{ fontFamily: font, padding: "4px 6px", borderRadius: 6 }}>
+                {Object.entries(VALUE_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
+              </select>
+            </label>
+            <button onClick={() => setShowValues((s) => !s)} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>
+              {showValues ? "Hide values" : "Edit values"}
+            </button>
+            <label style={{ border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer", background: "#fff" }}>
+              Upload word list
+              <input type="file" accept=".txt,.dic,.lst" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && loadFile(e.target.files[0])} />
+            </label>
+            <button onClick={() => setShowPaste((s) => !s)} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>
+              Paste word list
+            </button>
+            <button onClick={() => { setGrid(emptyGrid()); setMoves(null); setPreview(null); }} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>
+              Clear board
+            </button>
+          </div>
+          {dict.status === "error" && !showPaste && (
+            <p style={{ fontSize: 12, color: "#8a3b2a", marginTop: 10, lineHeight: 1.5 }}>
+              The word list could not be downloaded (no internet, or the CDN is blocked). Use <b>Upload word list</b> or <b>Paste word list</b>
+              (one word per line, any size) — the solver runs entirely on the pasted list.
+            </p>
+          )}
+          {showPaste && (
+            <div style={{ marginTop: 10 }}>
+              <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder={"One word per line (or separated by spaces/commas)…"}
+                rows={6}
+                style={{ width: "100%", fontFamily: font, fontSize: 13, padding: 8, border: "1px solid #c9c4b8", borderRadius: 6, boxSizing: "border-box" }}
+              />
+              <button onClick={() => loadText(pasteText, "pasted list")} disabled={!pasteText.trim()} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, marginTop: 6, padding: "7px 14px", borderRadius: 6, border: "none", background: pasteText.trim() ? "#2c4c86" : "#b9bec8", color: "#fff", cursor: "pointer" }}>
+                Use this list
+              </button>
+            </div>
+          )}
+          {showValues && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(13, 1fr)", gap: 4, marginTop: 10 }}>
+              {ALPHA.split("").map((L) => (
+                <label key={L} style={{ fontSize: 11, textAlign: "center" }}>
+                  {L}
+                  <input
+                    type="number" min={0} max={20} value={values[L]}
+                    onChange={(e) => { setValues({ ...values, [L]: Number(e.target.value) }); setMoves(null); }}
+                    style={{ width: "100%", fontFamily: font, fontSize: 12, padding: 2, border: "1px solid #c9c4b8", borderRadius: 4, textAlign: "center" }}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+          {dict.status === "ready" && dict.name.startsWith("dwyl") && (
+            <p style={{ fontSize: 12, color: "#8a5a1e", marginTop: 10, lineHeight: 1.5 }}>
+              The default list is generous and includes words your game may reject. Upload an official list
+              (NWL, TWL, or the Words With Friends dictionary as a .txt) for exact results.
+            </p>
+          )}
+        </div>
+
+        {/* ── Results column ─────────────────────────────── */}
+        <div style={{ flex: "1 1 360px", minWidth: 280 }}>
+          {!sorted && (
+            <div style={{ padding: "28px 20px", border: "1px dashed #c9c4b8", borderRadius: 10, color: "#5c6470", fontSize: 14, lineHeight: 1.6 }}>
+              Set up the board and your rack, then press <b>Find plays</b>. Every legal play is scored, ranked by
+              points plus rack leave, and previewed on the board when you hover.
+            </div>
+          )}
+          {sorted && (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ fontSize: 14, color: "#5c6470" }}>
+                  {moves.length.toLocaleString()} legal plays · showing top {sorted.length}
+                </div>
+                <div style={{ display: "flex", gap: 4, fontSize: 13 }}>
+                  {["equity", "score"].map((k) => (
+                    <button key={k} onClick={() => setSortBy(k)} style={{
+                      fontFamily: font, fontSize: 13, padding: "4px 10px", borderRadius: 6, cursor: "pointer",
+                      border: "1px solid #c9c4b8", background: sortBy === k ? "#2c4c86" : "#fff", color: sortBy === k ? "#fff" : "#1d2433",
+                    }}>
+                      {k === "equity" ? "Strategic" : "Raw score"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ background: "#fff", border: "1px solid #dedad2", borderRadius: 10, overflow: "hidden" }}>
+                {sorted.map((m, i) => {
+                  const active = preview === m;
+                  return (
+                    <div
+                      key={i}
+                      onMouseEnter={() => setPreview(m)}
+                      onMouseLeave={() => setPreview(null)}
+                      onClick={() => setPreview(active ? null : m)}
+                      style={{
+                        display: "grid", gridTemplateColumns: "28px 1fr auto", gap: 10, alignItems: "center",
+                        padding: "9px 12px", borderTop: i ? "1px solid #eeebe4" : "none",
+                        background: active ? "#fbf1e6" : i === 0 ? "#f3f6fb" : "transparent", cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ fontSize: 12, color: "#8a919c", textAlign: "right" }}>{i + 1}</div>
+                      <div>
+                        <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1 }}>
+                          {m.tiles.some((t) => t.b) ? m.word.split("").map((ch, j) => {
+                            const startIdx = m.dir === "across" ? m.col : m.row;
+                            const pos = startIdx + j;
+                            const t = m.tiles.find((t) => (m.dir === "across" ? t.c : t.r) === pos);
+                            return <span key={j} style={{ opacity: t?.b ? 0.55 : 1 }}>{ch}</span>;
+                          }) : m.word}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#5c6470" }}>
+                          {notation(m)} {m.dir} · {m.tiles.length} tile{m.tiles.length > 1 ? "s" : ""} · keep {m.leave || "nothing"}
+                          {m.tiles.length === 7 && <span style={{ color: "#a4551c", fontWeight: 600 }}> · bingo</span>}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: "#2c4c86" }}>{m.score}</div>
+                        <div style={{ fontSize: 11, color: "#8a919c" }}>
+                          leave {m.lv >= 0 ? "+" : ""}{m.lv.toFixed(1)}
+                        </div>
+                      </div>
+                      {active && (
+                        <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                          <button onClick={(e) => { e.stopPropagation(); playMove(m); }} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "6px 14px", borderRadius: 6, border: "none", background: "#c9772f", color: "#fff", cursor: "pointer" }}>
+                            Play this
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                <input
+                  type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Anthropic API key (optional, for Strategic read)"
+                  style={{ width: "100%", boxSizing: "border-box", fontFamily: font, fontSize: 13, padding: "7px 10px", border: "1px solid #c9c4b8", borderRadius: 6, marginBottom: 8 }}
+                />
+                <button onClick={askAI} disabled={ai.status === "loading" || !apiKey} style={{ fontFamily: font, fontSize: 14, fontWeight: 600, padding: "8px 16px", borderRadius: 8, border: "1px solid #2c4c86", background: "#fff", color: "#2c4c86", cursor: "pointer" }}>
+                  {ai.status === "loading" ? "Thinking…" : "Strategic read"}
+                </button>
+                {ai.text && (
+                  <p style={{ fontSize: 14, lineHeight: 1.6, marginTop: 10, padding: "12px 14px", background: "#fff", border: "1px solid #dedad2", borderRadius: 10, whiteSpace: "pre-wrap" }}>
+                    {ai.text}
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<WordSolver />);
+</script>
+</body>
+</html>
