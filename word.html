@@ -330,6 +330,12 @@ function WordSolver() {
   const [pasteText, setPasteText] = useState("");
   const [wordInput, setWordInput] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [placeError, setPlaceError] = useState(null);
+  const [gameId, setGameId] = useState("");
+  const [gameMsg, setGameMsg] = useState("");
+  const [savedIds, setSavedIds] = useState(() => {
+    try { return Object.keys(localStorage).filter((k) => k.startsWith("wordsolver:game:")).map((k) => k.slice(16)).sort(); } catch { return []; }
+  });
   const trieRef = useRef(null);
   const boardRef = useRef(null);
 
@@ -373,21 +379,127 @@ function WordSolver() {
     reader.readAsText(file);
   };
 
-  // Place a typed word on the board from the selected square
-  const placeWord = () => {
-    const w = wordInput.trim();
-    if (!w) return;
+  // ── Rule check for a manual placement ──────────────────────
+  // Returns { grid, words, problems } where problems is a list of rule violations.
+  const checkPlacement = (w) => {
     const g = grid.map((row) => row.slice());
+    const placed = [];
+    const problems = [];
     let { r, c } = sel;
     for (const ch of w) {
-      if (r >= N || c >= N) break;
-      if (/[a-zA-Z]/.test(ch)) g[r][c] = { l: ch.toUpperCase(), b: ch === ch.toLowerCase() };
+      if (r >= N || c >= N) { problems.push("Word runs off the board."); break; }
+      const L = ch.toUpperCase();
+      const existing = g[r][c];
+      if (existing) {
+        if (existing.l !== L) problems.push(`${COLS[c]}${r + 1} already holds ${existing.l}, not ${L}.`);
+      } else {
+        g[r][c] = { l: L, b: ch === ch.toLowerCase() };
+        placed.push({ r, c });
+      }
       if (typeDown) r++; else c++;
+    }
+    if (placed.length === 0) problems.push("Every letter is already on the board — nothing new was placed.");
+
+    const anyTiles = grid.some((row) => row.some(Boolean));
+    if (anyTiles) {
+      const touches = placed.some(({ r, c }) =>
+        [[r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]].some(([a, b]) => a >= 0 && b >= 0 && a < N && b < N && grid[a][b]));
+      // Also connected if the word passes through an existing tile
+      const passes = placed.length < w.length;
+      if (!touches && !passes) problems.push("New word must connect to tiles already on the board.");
+    } else if (!placed.some(({ r, c }) => r === 7 && c === 7)) {
+      problems.push("First word must cover the centre star.");
+    }
+
+    // Collect every word formed: the main line plus perpendiculars through each new tile
+    const readRun = (r0, c0, down) => {
+      let r = r0, c = c0;
+      while (true) {
+        const pr = down ? r - 1 : r, pc = down ? c : c - 1;
+        if (pr < 0 || pc < 0 || !g[pr][pc]) break;
+        r = pr; c = pc;
+      }
+      let s = "";
+      while (r < N && c < N && g[r][c]) { s += g[r][c].l; if (down) r++; else c++; }
+      return s;
+    };
+    const words = new Set();
+    if (placed.length) {
+      words.add(readRun(placed[0].r, placed[0].c, typeDown));
+      for (const { r, c } of placed) {
+        const x = readRun(r, c, !typeDown);
+        if (x.length > 1) words.add(x);
+      }
+    }
+    const root = trieRef.current;
+    const bad = root ? [...words].filter((x) => x.length > 1 && !isWord(root, x)) : [];
+    for (const x of bad) problems.push(`${x} is not in the dictionary.`);
+    return { grid: g, words: [...words], problems };
+  };
+
+  // Place a typed word on the board from the selected square
+  const placeWord = (force = false) => {
+    const w = wordInput.trim();
+    if (!w) return;
+    const { grid: g, words, problems } = checkPlacement(w);
+    if (problems.length && !force) {
+      setPlaceError({ problems, words });
+      return;
     }
     setGrid(g);
     setWordInput("");
+    setPlaceError(null);
     setMoves(null);
     setPreview(null);
+  };
+
+  // ── Save / load by game id ──────────────────────────────────
+  const storageKey = (id) => `wordsolver:game:${id.trim().toUpperCase()}`;
+  const listSaved = () => {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k?.startsWith("wordsolver:game:")) out.push(k.slice(16));
+      }
+    } catch {}
+    return out.sort();
+  };
+  const saveGame = () => {
+    const id = gameId.trim().toUpperCase() || `GAME-${Date.now().toString(36).toUpperCase()}`;
+    const payload = { v: 1, grid, rack, layoutKey, valueKey, values, saved: new Date().toISOString() };
+    try {
+      localStorage.setItem(storageKey(id), JSON.stringify(payload));
+      setGameId(id);
+      setSavedIds(listSaved());
+      setGameMsg(`Saved as ${id}`);
+    } catch { setGameMsg("Could not save (storage unavailable)."); }
+  };
+  const loadGame = (idArg) => {
+    const id = (idArg ?? gameId).trim().toUpperCase();
+    if (!id) return;
+    try {
+      const raw = localStorage.getItem(storageKey(id));
+      if (!raw) { setGameMsg(`No game called ${id}.`); return; }
+      const p = JSON.parse(raw);
+      setGrid(p.grid); setRack(p.rack || "");
+      if (p.layoutKey && LAYOUTS[p.layoutKey]) setLayoutKey(p.layoutKey);
+      if (p.valueKey && VALUE_PRESETS[p.valueKey]) setValueKey(p.valueKey);
+      if (p.values) setValues(p.values);
+      setGameId(id); setMoves(null); setPreview(null); setPlaceError(null);
+      setGameMsg(`Loaded ${id}`);
+    } catch { setGameMsg("Could not load that game."); }
+  };
+  const deleteGame = () => {
+    const id = gameId.trim().toUpperCase();
+    if (!id) return;
+    try { localStorage.removeItem(storageKey(id)); } catch {}
+    setSavedIds(listSaved());
+    setGameMsg(`Deleted ${id}`);
+  };
+  const newGame = () => {
+    setGrid(emptyGrid()); setRack(""); setMoves(null); setPreview(null); setPlaceError(null);
+    setGameId(""); setGameMsg("New game — board and rack cleared.");
   };
 
   const solve = () => {
@@ -551,7 +663,7 @@ function WordSolver() {
             </select>
             <input
               value={wordInput}
-              onChange={(e) => setWordInput(e.target.value.replace(/[^a-zA-Z]/g, ""))}
+              onChange={(e) => { setWordInput(e.target.value.replace(/[^a-zA-Z]/g, "")); setPlaceError(null); }}
               onKeyDown={(e) => e.key === "Enter" && placeWord()}
               placeholder="word (lowercase = blank)"
               autoCapitalize="characters"
@@ -559,14 +671,34 @@ function WordSolver() {
               spellCheck={false}
               style={{ flex: "1 1 140px", fontFamily: font, fontSize: 15, fontWeight: 600, letterSpacing: 2, padding: "6px 10px", border: "1px solid #c9c4b8", borderRadius: 6, background: "#fff" }}
             />
-            <button onClick={placeWord} disabled={!wordInput} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "7px 14px", borderRadius: 6, border: "none", background: wordInput ? "#2c4c86" : "#b9bec8", color: "#fff", cursor: "pointer" }}>
+            <button onClick={() => placeWord()} disabled={!wordInput} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "7px 14px", borderRadius: 6, border: "none", background: wordInput ? "#2c4c86" : "#b9bec8", color: "#fff", cursor: "pointer" }}>
               Place
             </button>
             <button onClick={() => { const g = grid.map((row) => row.slice()); g[sel.r][sel.c] = null; setGrid(g); setMoves(null); }} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>
               Clear square
             </button>
           </div>
+          {placeError && (
+            <div style={{ marginTop: 8, padding: "10px 12px", background: "#fdf2ee", border: "1px solid #e4b8a8", borderRadius: 8, fontSize: 13, lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 600, color: "#8a3b2a", marginBottom: 4 }}>That placement breaks the rules</div>
+              <ul style={{ margin: "0 0 6px 18px", padding: 0 }}>
+                {placeError.problems.map((p, i) => <li key={i}>{p}</li>)}
+              </ul>
+              {placeError.words.length > 0 && (
+                <div style={{ color: "#5c6470" }}>Words it would form: {placeError.words.join(", ")}</div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => placeWord(true)} style={{ fontFamily: font, fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9772f", background: "#fff", color: "#a4551c", cursor: "pointer" }}>
+                  Place anyway
+                </button>
+                <button onClick={() => setPlaceError(null)} style={{ fontFamily: font, fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9c4b8", background: "none", cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           <p style={{ fontSize: 12, color: "#5c6470", margin: "6px 2px 0", lineHeight: 1.5 }}>
+            Every word formed — the one you type and every cross-word — is checked, and the word must connect to the board.
             Tap a square to choose where the word starts. On a keyboard you can also type straight onto the board
             (Shift+letter for a blank, Enter to switch direction).
           </p>
@@ -617,9 +749,35 @@ function WordSolver() {
             <button onClick={() => setShowPaste((s) => !s)} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>
               Paste word list
             </button>
-            <button onClick={() => { setGrid(emptyGrid()); setMoves(null); setPreview(null); }} style={{ fontFamily: font, fontSize: 13, background: "none", border: "1px solid #c9c4b8", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>
-              Clear board
-            </button>
+          </div>
+
+          {/* Game save / load */}
+          <div style={{ marginTop: 14, padding: "10px 12px", background: "#fff", border: "1px solid #dedad2", borderRadius: 10 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+              <span style={{ fontWeight: 600 }}>Game</span>
+              <input
+                value={gameId}
+                onChange={(e) => setGameId(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ""))}
+                placeholder="id (e.g. VS-ANITA)"
+                list="saved-games"
+                autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+                style={{ flex: "1 1 120px", fontFamily: font, fontSize: 14, fontWeight: 600, padding: "6px 10px", border: "1px solid #c9c4b8", borderRadius: 6 }}
+              />
+              <datalist id="saved-games">{savedIds.map((id) => <option key={id} value={id} />)}</datalist>
+              {[["Save", saveGame, "#2c4c86", "#fff", "none"], ["Load", () => loadGame(), "#fff", "#2c4c86", "1px solid #2c4c86"], ["Delete", deleteGame, "none", "#8a3b2a", "1px solid #c9c4b8"], ["New game", newGame, "none", "#1d2433", "1px solid #c9c4b8"]].map(([label, fn, bg, fg, border]) => (
+                <button key={label} onClick={fn} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "6px 12px", borderRadius: 6, border, background: bg, color: fg, cursor: "pointer" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {savedIds.length > 0 && (
+              <div style={{ fontSize: 12, color: "#5c6470", marginTop: 6 }}>
+                Saved: {savedIds.map((id) => (
+                  <button key={id} onClick={() => loadGame(id)} style={{ fontFamily: font, fontSize: 12, background: "#f3f6fb", border: "1px solid #c9d6e6", borderRadius: 4, padding: "1px 7px", margin: "2px 4px 0 0", cursor: "pointer", color: "#2c4c86" }}>{id}</button>
+                ))}
+              </div>
+            )}
+            {gameMsg && <div style={{ fontSize: 12, color: "#365a35", marginTop: 6 }}>{gameMsg}</div>}
           </div>
           {dict.status === "error" && !showPaste && (
             <p style={{ fontSize: 12, color: "#8a3b2a", marginTop: 10, lineHeight: 1.5 }}>
