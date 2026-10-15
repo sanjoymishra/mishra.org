@@ -24,10 +24,25 @@ const { useState, useRef, useEffect, useMemo, useCallback } = React;
 const N = 15;
 const COLS = "ABCDEFGHIJKLMNO";
 const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const DICT_URLS = [
-  "https://cdn.jsdelivr.net/gh/dwyl/english-words@master/words_alpha.txt",
-  "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt",
-];
+// Real Scrabble word lists. TWL06 is the North American tournament list
+// (Scrabble US/Canada; Words With Friends is very close to it).
+// Collins (SOWPODS) is the international list — larger, more permissive.
+const DICTS = {
+  twl: {
+    name: "TWL06 (North American)",
+    urls: [
+      "https://raw.githubusercontent.com/redbo/scrabble/master/dictionary.txt",
+      "https://cdn.jsdelivr.net/gh/redbo/scrabble@master/dictionary.txt",
+    ],
+  },
+  collins: {
+    name: "Collins / SOWPODS (international)",
+    urls: [
+      "https://raw.githubusercontent.com/jesstess/Scrabble/master/scrabble/sowpods.txt",
+      "https://cdn.jsdelivr.net/gh/jesstess/Scrabble@master/scrabble/sowpods.txt",
+    ],
+  },
+};
 
 function mirror(spec) {
   const g = Array.from({ length: N }, () => Array(N).fill(""));
@@ -161,7 +176,60 @@ function generateMoves(grid, bonus, root, rackStr, values, bingo) {
     seen.add(key);
     moves.push(m);
   }
-  return moves;
+  // Independent safety net: re-verify every play against the board with a
+  // separate rule checker. Anything that forms a non-word (main or cross),
+  // overlaps, or fails to connect is discarded.
+  const legal = [];
+  for (const m of moves) {
+    const v = verifyPlay(grid, m, root);
+    if (v.error) continue;
+    m.crossWords = v.words.filter((w) => w !== m.word);
+    legal.push(m);
+  }
+  return legal;
+}
+
+// Returns { error } if the play is illegal, else { error: null, words } with
+// every word (main and cross) the play forms.
+function verifyPlay(grid, m, root) {
+  const bad = (error) => ({ error, words: [] });
+  const g = grid.map((r) => r.slice());
+  for (const t of m.tiles) {
+    if (g[t.r][t.c]) return bad("overlap");
+    g[t.r][t.c] = { l: t.l, b: t.b };
+  }
+  const rows = new Set(m.tiles.map((t) => t.r)), cols = new Set(m.tiles.map((t) => t.c));
+  if (rows.size > 1 && cols.size > 1) return bad("not in a line");
+  const anyTiles = grid.some((r) => r.some(Boolean));
+  if (!anyTiles) {
+    if (!m.tiles.some((t) => t.r === 7 && t.c === 7)) return bad("misses centre");
+  } else if (!m.tiles.some((t) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => grid[t.r + dr]?.[t.c + dc]))) {
+    return bad("disconnected");
+  }
+  const down = rows.size > 1;
+  const idx = m.tiles.map((t) => (down ? t.r : t.c)).sort((a, b) => a - b);
+  for (let i = idx[0]; i <= idx[idx.length - 1]; i++) {
+    const r = down ? i : m.tiles[0].r, c = down ? m.tiles[0].c : i;
+    if (!g[r][c]) return bad("gap in word");
+  }
+  const words = new Set();
+  for (const t of m.tiles) {
+    for (const d of [false, true]) {
+      let r = t.r, c = t.c;
+      while (true) {
+        const pr = d ? r - 1 : r, pc = d ? c : c - 1;
+        if (pr < 0 || pc < 0 || !g[pr][pc]) break;
+        r = pr; c = pc;
+      }
+      let s = "";
+      while (r < N && c < N && g[r][c]) { s += g[r][c].l; if (d) r++; else c++; }
+      if (s.length > 1) {
+        if (!isWord(root, s)) return bad(`${s} is not a word`);
+        words.add(s);
+      }
+    }
+  }
+  return { error: null, words: [...words] };
 }
 
 function genDir(grid, bonus, root, rack, values, bingo, anyTiles, transposed, out) {
@@ -248,20 +316,27 @@ function genDir(grid, bonus, root, rack, values, bingo, anyTiles, transposed, ou
       }
     };
 
+    // Left part: build a prefix left-to-right in the trie (so the trie path
+    // matches the word as it will read on the board), then lay those tiles
+    // down in the cells immediately left of the anchor and extend right.
+    const prefix = [];
     const leftPart = (node, anc, limit) => {
-      extendRight(node, anc, anc - placed.length, anc);
+      placed.length = 0;
+      for (let i = 0; i < prefix.length; i++)
+        placed.push({ c: anc - prefix.length + i, l: prefix[i].l, b: prefix[i].b });
+      extendRight(node, anc, anc - prefix.length, anc);
+      placed.length = 0;
       if (limit <= 0) return;
       for (const L in node.c) {
-        const col = anc - placed.length - 1;
         if (rack[L] > 0) {
-          rack[L]--; placed.unshift({ c: col, l: L, b: false });
+          rack[L]--; prefix.push({ l: L, b: false });
           leftPart(node.c[L], anc, limit - 1);
-          placed.shift(); rack[L]++;
+          prefix.pop(); rack[L]++;
         }
         if (rack["?"] > 0) {
-          rack["?"]--; placed.unshift({ c: col, l: L, b: true });
+          rack["?"]--; prefix.push({ l: L, b: true });
           leftPart(node.c[L], anc, limit - 1);
-          placed.shift(); rack["?"]++;
+          prefix.pop(); rack["?"]++;
         }
       }
     };
@@ -324,6 +399,7 @@ function WordSolver() {
   const [moves, setMoves] = useState(null);
   const [sortBy, setSortBy] = useState("equity");
   const [preview, setPreview] = useState(null);
+  const [dictKey, setDictKey] = useState("twl");
   const [ai, setAi] = useState({ status: "idle", text: "" });
   const [showValues, setShowValues] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
@@ -341,11 +417,14 @@ function WordSolver() {
 
   const layout = LAYOUTS[layoutKey];
 
-  // Load default dictionary
+  // Load the selected dictionary (re-runs when the user switches lists)
   useEffect(() => {
     let alive = true;
+    setDict({ status: "loading", count: 0, name: "" });
+    setMoves(null);
     (async () => {
-      for (const url of DICT_URLS) {
+      const d = DICTS[dictKey];
+      for (const url of d.urls) {
         try {
           const res = await fetch(url);
           if (!res.ok) continue;
@@ -354,7 +433,7 @@ function WordSolver() {
           const { root, count } = buildTrie(text.toUpperCase().split(/\r?\n/));
           if (!alive) return;
           trieRef.current = root;
-          setDict({ status: "ready", count, name: "dwyl english-words (permissive)" });
+          setDict({ status: "ready", count, name: d.name });
           return;
         } catch {
           /* try next mirror */
@@ -363,7 +442,7 @@ function WordSolver() {
       if (alive) setDict({ status: "error", count: 0, name: "" });
     })();
     return () => { alive = false; };
-  }, []);
+  }, [dictKey]);
 
   const loadText = (text, name) => {
     const { root, count } = buildTrie(String(text).toUpperCase().split(/[\s,;]+/));
@@ -595,7 +674,9 @@ function WordSolver() {
         {/* ── Board column ─────────────────────────────── */}
         <div style={{ flex: "1 1 420px", minWidth: 300 }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-            <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0, letterSpacing: -0.5 }}>Best play</h1>
+            <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0, letterSpacing: -0.5 }}>
+              Best play <span style={{ fontSize: 12, fontWeight: 500, color: "#8a919c", marginLeft: 6 }}>v4</span>
+            </h1>
             <div style={{ fontSize: 13, color: "#5c6470" }}>
               {dict.status === "loading" && "Loading dictionary…"}
               {dict.status === "ready" && `${dict.count.toLocaleString()} words · ${dict.name}`}
@@ -734,6 +815,11 @@ function WordSolver() {
                 {Object.entries(LAYOUTS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
               </select>
             </label>
+            <label>Word list&nbsp;
+              <select value={dictKey} onChange={(e) => setDictKey(e.target.value)} style={{ fontFamily: font, padding: "4px 6px", borderRadius: 6 }}>
+                {Object.entries(DICTS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
+              </select>
+            </label>
             <label>Tile values&nbsp;
               <select value={valueKey} onChange={(e) => { setValueKey(e.target.value); setValues(VALUE_PRESETS[e.target.value].v); setMoves(null); }} style={{ fontFamily: font, padding: "4px 6px", borderRadius: 6 }}>
                 {Object.entries(VALUE_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
@@ -813,12 +899,11 @@ function WordSolver() {
               ))}
             </div>
           )}
-          {dict.status === "ready" && dict.name.startsWith("dwyl") && (
-            <p style={{ fontSize: 12, color: "#8a5a1e", marginTop: 10, lineHeight: 1.5 }}>
-              The default list is generous and includes words your game may reject. Upload an official list
-              (NWL, TWL, or the Words With Friends dictionary as a .txt) for exact results.
-            </p>
-          )}
+          <p style={{ fontSize: 12, color: "#5c6470", marginTop: 10, lineHeight: 1.5 }}>
+            TWL06 is the North American tournament list and matches Scrabble US and Words With Friends closely
+            (WWF adds a few hundred words of its own, and newer lists like NWL2023 add a handful more).
+            Upload your game's exact list as a .txt for a perfect match.
+          </p>
         </div>
 
         {/* ── Results column ─────────────────────────────── */}
@@ -876,6 +961,9 @@ function WordSolver() {
                           {notation(m)} {m.dir} · {m.tiles.length} tile{m.tiles.length > 1 ? "s" : ""} · keep {m.leave || "nothing"}
                           {m.tiles.length === 7 && <span style={{ color: "#a4551c", fontWeight: 600 }}> · bingo</span>}
                         </div>
+                        {m.crossWords.length > 0 && (
+                          <div style={{ fontSize: 12, color: "#365a35" }}>also forms {m.crossWords.join(", ")}</div>
+                        )}
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div style={{ fontSize: 20, fontWeight: 700, color: "#2c4c86" }}>{m.score}</div>
