@@ -4,9 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Word Solver</title>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<script>
+  // Classic JSX runtime: works on both Babel 7 and 8, no module imports emitted.
+  Babel.registerPreset("app", { presets: [[Babel.availablePresets.react, { runtime: "classic" }]] });
+</script>
 <style>
   html, body { margin: 0; background: #f6f4ef; }
   button:disabled { cursor: default !important; }
@@ -15,7 +19,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-presets="react">
+<script type="text/babel" data-presets="app">
 const { useState, useRef, useEffect, useMemo, useCallback } = React;
 
 // ─────────────────────────────────────────────────────────────
@@ -409,9 +413,8 @@ function WordSolver() {
   const [placeError, setPlaceError] = useState(null);
   const [gameId, setGameId] = useState("");
   const [gameMsg, setGameMsg] = useState("");
-  const [savedIds, setSavedIds] = useState(() => {
-    try { return Object.keys(localStorage).filter((k) => k.startsWith("wordsolver:game:")).map((k) => k.slice(16)).sort(); } catch { return []; }
-  });
+  const [savedGames, setSavedGames] = useState([]);
+  useEffect(() => { setSavedGames(listSaved()); /* eslint-disable-line */ }, []);
   const trieRef = useRef(null);
   const boardRef = useRef(null);
 
@@ -532,54 +535,98 @@ function WordSolver() {
     setPreview(null);
   };
 
-  // ── Save / load by game id ──────────────────────────────────
-  const storageKey = (id) => `wordsolver:game:${id.trim().toUpperCase()}`;
+  // ── Games: saved by id, auto-saved on change, last game restored ──
+  const GAME_PREFIX = "wordsolver:game:";
+  const LAST_KEY = "wordsolver:last";
+  const storageKey = (id) => GAME_PREFIX + id.trim().toUpperCase();
   const listSaved = () => {
     const out = [];
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k?.startsWith("wordsolver:game:")) out.push(k.slice(16));
+        if (k?.startsWith(GAME_PREFIX)) {
+          try {
+            const p = JSON.parse(localStorage.getItem(k));
+            out.push({ id: k.slice(GAME_PREFIX.length), saved: p.saved || "", tiles: (p.grid || []).flat().filter(Boolean).length });
+          } catch { out.push({ id: k.slice(GAME_PREFIX.length), saved: "", tiles: 0 }); }
+        }
       }
     } catch {}
-    return out.sort();
+    return out.sort((x, y) => (y.saved || "").localeCompare(x.saved || ""));
+  };
+  const writeGame = (id, g, rk) => {
+    const payload = { v: 1, grid: g, rack: rk, layoutKey, valueKey, values, dictKey, saved: new Date().toISOString() };
+    localStorage.setItem(storageKey(id), JSON.stringify(payload));
+    localStorage.setItem(LAST_KEY, id);
   };
   const saveGame = () => {
-    const id = gameId.trim().toUpperCase() || `GAME-${Date.now().toString(36).toUpperCase()}`;
-    const payload = { v: 1, grid, rack, layoutKey, valueKey, values, saved: new Date().toISOString() };
+    const id = gameId.trim().toUpperCase() || `GAME-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36).slice(-3).toUpperCase()}`;
     try {
-      localStorage.setItem(storageKey(id), JSON.stringify(payload));
+      writeGame(id, grid, rack);
       setGameId(id);
-      setSavedIds(listSaved());
-      setGameMsg(`Saved as ${id}`);
-    } catch { setGameMsg("Could not save (storage unavailable)."); }
+      setSavedGames(listSaved());
+      setGameMsg(`Saved as ${id}. Changes to this game now save automatically.`);
+    } catch { setGameMsg("Could not save — this browser is blocking local storage (private mode?)."); }
   };
   const loadGame = (idArg) => {
-    const id = (idArg ?? gameId).trim().toUpperCase();
-    if (!id) return;
+    const id = String(idArg ?? gameId).trim().toUpperCase();
+    if (!id) { setGameMsg("Choose a saved game first."); return false; }
     try {
       const raw = localStorage.getItem(storageKey(id));
-      if (!raw) { setGameMsg(`No game called ${id}.`); return; }
+      if (!raw) { setGameMsg(`No game called ${id}.`); return false; }
       const p = JSON.parse(raw);
-      setGrid(p.grid); setRack(p.rack || "");
+      const g = Array.isArray(p.grid) && p.grid.length === N ? p.grid.map((row) => row.map((c) => (c && c.l ? { l: c.l, b: !!c.b } : null))) : emptyGrid();
+      setGrid(g); setRack(p.rack || "");
       if (p.layoutKey && LAYOUTS[p.layoutKey]) setLayoutKey(p.layoutKey);
       if (p.valueKey && VALUE_PRESETS[p.valueKey]) setValueKey(p.valueKey);
       if (p.values) setValues(p.values);
+      if (p.dictKey && DICTS[p.dictKey]) setDictKey(p.dictKey);
       setGameId(id); setMoves(null); setPreview(null); setPlaceError(null);
+      try { localStorage.setItem(LAST_KEY, id); } catch {}
       setGameMsg(`Loaded ${id}`);
-    } catch { setGameMsg("Could not load that game."); }
+      return true;
+    } catch { setGameMsg("Could not load that game — its saved data is unreadable."); return false; }
   };
   const deleteGame = () => {
     const id = gameId.trim().toUpperCase();
     if (!id) return;
-    try { localStorage.removeItem(storageKey(id)); } catch {}
-    setSavedIds(listSaved());
+    try {
+      localStorage.removeItem(storageKey(id));
+      if (localStorage.getItem(LAST_KEY) === id) localStorage.removeItem(LAST_KEY);
+    } catch {}
+    setSavedGames(listSaved());
+    setGameId("");
     setGameMsg(`Deleted ${id}`);
   };
   const newGame = () => {
     setGrid(emptyGrid()); setRack(""); setMoves(null); setPreview(null); setPlaceError(null);
-    setGameId(""); setGameMsg("New game — board and rack cleared.");
+    setGameId("");
+    try { localStorage.removeItem(LAST_KEY); } catch {}
+    setGameMsg("New game — board and rack cleared. Give it an id and press Save to keep it.");
   };
+
+  // Restore the last open game on landing
+  useEffect(() => {
+    try {
+      const last = localStorage.getItem(LAST_KEY);
+      if (last && localStorage.getItem(storageKey(last))) loadGame(last);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save the current game whenever the board or rack changes
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    const id = gameId.trim().toUpperCase();
+    if (!id) return;
+    try {
+      if (!localStorage.getItem(storageKey(id))) return; // not saved yet — user must press Save once
+      writeGame(id, grid, rack);
+      setSavedGames(listSaved());
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, rack, layoutKey, valueKey, values, dictKey]);
 
   const solve = () => {
     if (!trieRef.current) return;
@@ -675,7 +722,7 @@ function WordSolver() {
         <div style={{ flex: "1 1 420px", minWidth: 300 }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
             <h1 style={{ fontSize: 26, fontWeight: 600, margin: 0, letterSpacing: -0.5 }}>
-              Best play <span style={{ fontSize: 12, fontWeight: 500, color: "#8a919c", marginLeft: 6 }}>v4</span>
+              Best play <span style={{ fontSize: 12, fontWeight: 500, color: "#8a919c", marginLeft: 6 }}>v5</span>
             </h1>
             <div style={{ fontSize: 13, color: "#5c6470" }}>
               {dict.status === "loading" && "Loading dictionary…"}
@@ -841,29 +888,36 @@ function WordSolver() {
           <div style={{ marginTop: 14, padding: "10px 12px", background: "#fff", border: "1px solid #dedad2", borderRadius: 10 }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
               <span style={{ fontWeight: 600 }}>Game</span>
+              <select
+                value={savedGames.some((g) => g.id === gameId) ? gameId : ""}
+                onChange={(e) => { if (e.target.value) loadGame(e.target.value); }}
+                style={{ flex: "1 1 160px", fontFamily: font, fontSize: 14, padding: "6px 8px", borderRadius: 6, border: "1px solid #c9c4b8", background: "#fff" }}
+              >
+                <option value="">{savedGames.length ? "Open a saved game…" : "No saved games yet"}</option>
+                {savedGames.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.id} · {g.tiles} tiles{g.saved ? ` · ${new Date(g.saved).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : ""}
+                  </option>
+                ))}
+              </select>
               <input
                 value={gameId}
                 onChange={(e) => setGameId(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ""))}
-                placeholder="id (e.g. VS-ANITA)"
-                list="saved-games"
+                placeholder="new id (e.g. VS-ANITA)"
                 autoCapitalize="characters" autoCorrect="off" spellCheck={false}
                 style={{ flex: "1 1 120px", fontFamily: font, fontSize: 14, fontWeight: 600, padding: "6px 10px", border: "1px solid #c9c4b8", borderRadius: 6 }}
               />
-              <datalist id="saved-games">{savedIds.map((id) => <option key={id} value={id} />)}</datalist>
-              {[["Save", saveGame, "#2c4c86", "#fff", "none"], ["Load", () => loadGame(), "#fff", "#2c4c86", "1px solid #2c4c86"], ["Delete", deleteGame, "none", "#8a3b2a", "1px solid #c9c4b8"], ["New game", newGame, "none", "#1d2433", "1px solid #c9c4b8"]].map(([label, fn, bg, fg, border]) => (
+              {[["Save", saveGame, "#2c4c86", "#fff", "none"], ["Delete", deleteGame, "none", "#8a3b2a", "1px solid #c9c4b8"], ["New game", newGame, "none", "#1d2433", "1px solid #c9c4b8"]].map(([label, fn, bg, fg, border]) => (
                 <button key={label} onClick={fn} style={{ fontFamily: font, fontSize: 13, fontWeight: 600, padding: "6px 12px", borderRadius: 6, border, background: bg, color: fg, cursor: "pointer" }}>
                   {label}
                 </button>
               ))}
             </div>
-            {savedIds.length > 0 && (
-              <div style={{ fontSize: 12, color: "#5c6470", marginTop: 6 }}>
-                Saved: {savedIds.map((id) => (
-                  <button key={id} onClick={() => loadGame(id)} style={{ fontFamily: font, fontSize: 12, background: "#f3f6fb", border: "1px solid #c9d6e6", borderRadius: 4, padding: "1px 7px", margin: "2px 4px 0 0", cursor: "pointer", color: "#2c4c86" }}>{id}</button>
-                ))}
-              </div>
-            )}
-            {gameMsg && <div style={{ fontSize: 12, color: "#365a35", marginTop: 6 }}>{gameMsg}</div>}
+            <div style={{ fontSize: 12, color: gameMsg ? "#365a35" : "#5c6470", marginTop: 6 }}>
+              {gameMsg || (gameId && savedGames.some((g) => g.id === gameId)
+                ? `Playing ${gameId} — every change is saved automatically and it reopens next visit.`
+                : "Pick a saved game from the list, or name this one and press Save.")}
+            </div>
           </div>
           {dict.status === "error" && !showPaste && (
             <p style={{ fontSize: 12, color: "#8a3b2a", marginTop: 10, lineHeight: 1.5 }}>
